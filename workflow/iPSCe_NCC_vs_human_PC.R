@@ -1,0 +1,290 @@
+# Version info: R 4.2.2, Biobase 2.58.0, GEOquery 2.66.0, limma 3.54.0
+################################################################
+#   Data plots for selected GEO samples
+
+
+# load counts table from GEO
+urld <- "https://www.ncbi.nlm.nih.gov/geo/download/?format=file&type=rnaseq_counts"
+path <- paste(urld, "acc=GSE252046", "file=GSE252046_raw_counts_GRCh38.p13_NCBI.tsv.gz", sep="&");
+tbl <- as.matrix(data.table::fread(path, header=T, colClasses="integer"), rownames=1)
+
+# pre-filter low count genes
+# keep genes with at least 2 counts > 10
+keep <- rowSums( tbl >= 10 ) >= 2
+tbl <- tbl[keep, ]
+
+# log transform raw counts
+# instead of raw counts can display vst(as.matrix(tbl)) i.e. variance stabilized counts
+dat <- log10(tbl + 1)
+
+# box-and-whisker plot
+par(mar=c(7,4,2,1))
+boxplot(dat, boxwex=0.7, notch=T, main="GSE252046", ylab="lg(cnt + 1)", outline=F, las=2)
+
+# UMAP plot (dimensionality reduction)
+library(umap)
+dat <- dat[!duplicated(dat), ] # first remove duplicates
+ump <- umap(t(dat), n_neighbors = 5, random_state = 123)
+plot(ump$layout, main="GSE252046 UMAP plot, nbrs =5", xlab="", ylab="", pch=20, cex=1.5)
+library(car)
+pointLabel(ump$layout, labels = rownames(ump$layout), method="SANN", cex=0.6)
+
+
+# Version info: R 4.2.2, Biobase 2.58.0, GEOquery 2.66.0, limma 3.54.0
+################################################################
+#   Differential expression analysis with DESeq2
+library(DESeq2)
+
+# load counts table from GEO
+urld <- "https://www.ncbi.nlm.nih.gov/geo/download/?format=file&type=rnaseq_counts"
+path <- paste(urld, "acc=GSE252046", "file=GSE252046_raw_counts_GRCh38.p13_NCBI.tsv.gz", sep="&");
+tbl <- as.matrix(data.table::fread(path, header=T, colClasses="integer"), rownames="GeneID")
+
+# load gene annotations 
+apath <- paste(urld, "type=rnaseq_counts", "file=Human.GRCh38.p13.annot.tsv.gz", sep="&")
+annot <- data.table::fread(apath, header=T, quote="", stringsAsFactors=F, data.table=F)
+rownames(annot) <- annot$GeneID
+
+# sample selection
+gsms <- "000000111XXX"
+sml <- strsplit(gsms, split="")[[1]]
+
+# filter out excluded samples (marked as "X")
+sel <- which(sml != "X")
+sml <- sml[sel]
+tbl <- tbl[ ,sel]
+
+# group membership for samples
+gs <- factor(sml)
+groups <- make.names(c("primary PC","NCC-PC"))
+levels(gs) <- groups
+sample_info <- data.frame(Group = gs, row.names = colnames(tbl))
+
+# pre-filter low count genes
+# keep genes with at least N counts > 10, where N = size of smallest group
+keep <- rowSums( tbl >= 10 ) >= min(table(gs))
+tbl <- tbl[keep, ]
+
+ds <- DESeqDataSetFromMatrix(countData=tbl, colData=sample_info, design= ~Group)
+
+ds <- DESeq(ds, test="Wald", sfType="poscount")
+
+# extract results for top genes table
+r <- results(ds, contrast = c("Group", groups[2], groups[1]), alpha = 0.05, pAdjustMethod = "fdr")
+
+tT <- r[order(r$padj)[1:250],] 
+tT <- merge(as.data.frame(tT), annot, by=0, sort=F)
+
+tT <- subset(tT, select=c("GeneID","padj","pvalue","lfcSE","stat","log2FoldChange","baseMean","Symbol","Description"))
+write.table(tT, file=stdout(), row.names=F, sep="\t")
+
+plotDispEsts(ds, main="GSE252046 Dispersion Estimates")
+
+# create histogram plot of p-values
+hist(r$padj, breaks=seq(0, 1, length = 21), col = "grey", border = "white", 
+     xlab = "", ylab = "", main = "GSE252046 Frequencies of padj-values")
+
+# volcano plot
+old.pal <- palette(c("#00BFFF", "#FF3030")) # low-hi colors
+par(mar=c(4,4,2,1), cex.main=1.5)
+plot(r$log2FoldChange, -log10(r$padj), main=paste(groups[1], "vs", groups[2]),
+     xlab="log2FC", ylab="-log10(Padj)", pch=20, cex=0.5)
+with(subset(r, padj<0.05 & abs(log2FoldChange) >= 0),
+     points(log2FoldChange, -log10(padj), pch=20, col=(sign(log2FoldChange) + 3)/2, cex=1))
+legend("bottomleft", title=paste("Padj<", 0.05, sep=""), legend=c("down", "up"), pch=20,col=1:2)
+
+
+
+# MD plot
+par(mar=c(4,4,2,1), cex.main=1.5)
+plot(log10(r$baseMean), r$log2FoldChange, main=paste(groups[1], "vs", groups[2]),
+     xlab="log10(mean of normalized counts)", ylab="log2FoldChange", pch=20, cex=0.5)
+with(subset(r, padj<0.05 & abs(log2FoldChange) >= 0),
+     points(log10(baseMean), log2FoldChange, pch=20, col=(sign(log2FoldChange) + 3)/2, cex=1))
+legend("bottomleft", title=paste("Padj<", 0.05, sep=""), legend=c("down", "up"), pch=20,col=1:2)
+abline(h=0)
+palette(old.pal) # restore palette
+
+################################################################
+#   General expression data visualization
+dat <- log10(counts(ds, normalized = T) + 1) # extract normalized counts
+
+# box-and-whisker plot
+lbl <- "log10(raw counts + 1)"
+ord <- order(gs)  # order samples by group
+palette(c("#1B9E77", "#7570B3", "#E7298A", "#E6AB02", "#D95F02",
+          "#66A61E", "#A6761D", "#B32424", "#B324B3", "#666666"))
+par(mar=c(7,4,2,1))
+boxplot(dat[,ord], boxwex=0.6, notch=T, main="GSE252046", ylab="lg(norm.counts)", outline=F, las=2, col=gs[ord])
+legend("topleft", groups, fill=palette(), bty="n")
+
+# UMAP plot (multi-dimensional scaling)
+library(umap)
+dat <- dat[!duplicated(dat), ] # first remove duplicates
+par(mar=c(3,3,2,6), xpd=TRUE, cex.main=1.5)
+ump <- umap(t(dat), n_neighbors = 4, random_state = 123)
+plot(ump$layout, main="UMAP plot, nbrs=4", xlab="", ylab="", col=gs, pch=20, cex=1.5)
+legend("topright", inset=c(-0.15,0), legend=groups, pch=20,
+       col=1:length(groups), title="Group", pt.cex=1.5)
+
+
+# Assuming your DESeqResults object is called r
+df <- data.frame(
+  gene = rownames(r),
+  log2FoldChange = r$log2FoldChange,
+  pvalue = r$pvalue
+)
+
+# View the first few rows
+head(df)
+
+
+library(AnnotationDbi)
+library(org.Hs.eg.db)  # human; for mouse use org.Mm.eg.db
+
+# Map Entrez IDs (from rownames) to SYMBOL
+symbols <- mapIds(
+  org.Hs.eg.db,
+  keys = rownames(r),
+  column = "SYMBOL",
+  keytype = "ENTREZID",
+  multiVals = "first"
+)
+
+# Create dataframe
+df <- data.frame(
+  SYMBOL = symbols,
+  log2FoldChange = r$log2FoldChange,
+  pvalue = r$pvalue
+)
+
+# Remove NAs if you want
+df <- na.omit(df)
+
+head(df)
+
+
+# Heatmap of top DE genes
+library(pheatmap)
+
+# variance-stabilized counts
+vsd <- vst(ds, blind = TRUE)
+mat <- assay(vsd)
+
+# pick top 50 by adjusted p value
+topn <- 50
+sel <- order(r$padj)[seq_len(min(topn, sum(!is.na(r$padj))))]
+mat <- mat[sel, ]
+
+# replace rownames with SYMBOL when possible
+sym <- annot[rownames(mat), "Symbol"]
+rownames(mat) <- ifelse(is.na(sym) | sym == "", rownames(mat), sym)
+
+# scale by gene
+mat <- t(scale(t(mat)))
+
+# column annotation
+ann_col <- data.frame(Group = gs)
+rownames(ann_col) <- colnames(mat)
+
+pheatmap(
+  mat,
+  annotation_col = ann_col,
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  show_rownames = TRUE,
+  fontsize_row = 6,
+  main = "Top DE genes"
+)
+
+
+## ---- GO + heatmap side by side, using your DE criteria -----------------
+
+library(DESeq2)
+library(pheatmap)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+
+# 1) pick DE genes by your thresholds
+crit <- with(as.data.frame(r), !is.na(padj) & padj < 0.05 & abs(log2FoldChange) > 1)
+de_ids <- rownames(r)[crit]                  # ENTREZ IDs
+n_de <- length(de_ids)
+
+# 2) heatmap of top DE genes by padj
+vsd <- vst(ds, blind = TRUE)
+mat_all <- assay(vsd)
+keep_ids <- rownames(r)[order(r$padj)][crit[order(r$padj)]]   # DE ordered by padj
+N <- 80                                                       # change for more or fewer rows
+sel <- head(keep_ids, min(N, n_de))
+mat <- mat_all[sel, , drop = FALSE]
+
+# replace row names with SYMBOL when possible
+sym <- annot[rownames(mat), "Symbol"]
+rownames(mat) <- ifelse(is.na(sym) | sym == "", rownames(mat), sym)
+
+# order columns by group and scale per gene
+ord <- order(gs)
+mat <- mat[, ord, drop = FALSE]
+gap_idx <- sum(gs[ord] == levels(gs)[1])
+mat <- t(scale(t(mat)))
+
+ann_col <- data.frame(Group = gs[ord])
+rownames(ann_col) <- colnames(mat)
+pal <- colorRampPalette(c("navy", "white", "firebrick3"))(101)
+
+ph <- pheatmap(
+  mat,
+  color = pal,
+  annotation_col = ann_col,
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  show_rownames = FALSE,
+  gaps_col = gap_idx,
+  main = paste0("Top DE genes heatmap  n = ", min(N, n_de)),
+  silent = TRUE
+)
+
+# 3) GO enrichment on the same DE set, background is all tested genes
+ego_bp <- enrichGO(gene = de_ids, universe = rownames(r),
+                   OrgDb = org.Hs.eg.db, keyType = "ENTREZID",
+                   ont = "BP", pAdjustMethod = "BH", readable = TRUE)
+ego_cc <- enrichGO(gene = de_ids, universe = rownames(r),
+                   OrgDb = org.Hs.eg.db, keyType = "ENTREZID",
+                   ont = "CC", pAdjustMethod = "BH", readable = TRUE)
+ego_mf <- enrichGO(gene = de_ids, universe = rownames(r),
+                   OrgDb = org.Hs.eg.db, keyType = "ENTREZID",
+                   ont = "MF", pAdjustMethod = "BH", readable = TRUE)
+
+pick_top <- function(ego, k = 10, label) {
+  if (is.null(ego) || nrow(as.data.frame(ego)) == 0) return(NULL)
+  df <- as.data.frame(ego)[, c("Description", "p.adjust")]
+  df <- df[order(df$p.adjust), , drop = FALSE]
+  df <- df[seq_len(min(k, nrow(df))), ]
+  df$Ontology <- label
+  df
+}
+
+go_df <- bind_rows(
+  pick_top(ego_bp, 10, "Biological Process"),
+  pick_top(ego_cc, 10, "Cellular Compartment"),
+  pick_top(ego_mf, 10, "Molecular Function")
+) %>% mutate(log_padj = -log10(p.adjust))
+
+p_go <- ggplot(go_df, aes(x = reorder(Description, log_padj), y = log_padj)) +
+  geom_col() +
+  coord_flip() +
+  facet_grid(Ontology ~ ., scales = "free_y", space = "free_y") +
+  labs(x = NULL, y = "log padj",
+       title = paste0("GO enrichment  DE genes n = ", n_de)) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "none",
+        strip.text.y = element_text(angle = 0),
+        panel.spacing.y = unit(6, "pt"))
+
+# 4) draw together
+#grid.arrange(ph$gtable, ggplotGrob(p_go), ncol = 2, widths = c(2, 1))
+p_go
+
