@@ -39,9 +39,4 @@ questions:\
   - id: q5\
     stage: differential_expression\
     text: "What proportion of genes tested have p-values below 0.001?"\
-    answer_type: string_exact\
-\
-  - id: q6\
-    stage: pathway_enrichment\
-    text: "What is the top enriched Biological Process GO term (lowest adjusted p-value) among significantly differentially expressed genes?"\
-    answer_type: string_exact}
+    answer_type: string_exact }
